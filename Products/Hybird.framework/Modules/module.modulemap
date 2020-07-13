@@ -1,0 +1,6 @@
+framework module Hybird {
+  umbrella header "Hybird.h"
+
+  export *
+  module * { export * }
+}
