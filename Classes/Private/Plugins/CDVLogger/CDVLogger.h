@@ -17,13 +17,10 @@
  under the License.
  */
 
-#import <UIKit/UIKit.h>
-#import "CDVUIWebViewEngine.h"
+#import <Cordova/CDVPlugin.h>
 
-@interface CDVUIWebViewNavigationDelegate : NSObject <UIWebViewDelegate>
+@interface CDVLogger : CDVPlugin
 
-@property (nonatomic, weak) CDVPlugin* enginePlugin;
-
-- (instancetype)initWithEnginePlugin:(CDVPlugin*)enginePlugin;
+- (void)logLevel:(CDVInvokedUrlCommand*)command;
 
 @end

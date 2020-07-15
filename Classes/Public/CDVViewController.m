@@ -20,25 +20,22 @@
 #import <objc/message.h>
 #import "CDV.h"
 #import "CDVPlugin+Private.h"
-#import "CDVUIWebViewDelegate.h"
+#import "CDVWebViewUIDelegate.h"
 #import "CDVConfigParser.h"
-#import "CDVUserAgentUtil.h"
 #import <AVFoundation/AVFoundation.h>
 #import "NSDictionary+CordovaPreferences.h"
-#import "CDVLocalStorage.h"
 #import "CDVCommandDelegateImpl.h"
+#import <Foundation/NSCharacterSet.h>
 
-@interface CDVViewController () {
-    NSInteger _userAgentLockToken;
-}
+@interface CDVViewController () { }
 
 @property (nonatomic, readwrite, strong) NSXMLParser* configParser;
 @property (nonatomic, readwrite, strong) NSMutableDictionary* settings;
 @property (nonatomic, readwrite, strong) NSMutableDictionary* pluginObjects;
 @property (nonatomic, readwrite, strong) NSMutableArray* startupPluginNames;
 @property (nonatomic, readwrite, strong) NSDictionary* pluginsMap;
-@property (nonatomic, readwrite, strong) NSArray* supportedOrientations;
 @property (nonatomic, readwrite, strong) id <CDVWebViewEngineProtocol> webViewEngine;
+@property (nonatomic, readwrite, strong) UIView* launchView;
 
 @property (readwrite, assign) BOOL initialized;
 
@@ -51,7 +48,7 @@
 @synthesize supportedOrientations;
 @synthesize pluginObjects, pluginsMap, startupPluginNames;
 @synthesize configParser, settings;
-@synthesize wwwFolderName, startPage, initialized, openURL, baseUserAgent;
+@synthesize wwwFolderName, startPage, initialized, openURL;
 @synthesize commandDelegate = _commandDelegate;
 @synthesize commandQueue = _commandQueue;
 @synthesize webViewEngine = _webViewEngine;
@@ -73,6 +70,9 @@
                                                      name:UIApplicationWillEnterForegroundNotification object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(onAppDidEnterBackground:)
                                                      name:UIApplicationDidEnterBackgroundNotification object:nil];
+
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(onWebViewPageDidLoad:)
+                                                     name:CDVPageDidLoadNotification object:nil];
 
         // read from UISupportedInterfaceOrientations (or UISupportedInterfaceOrientations~iPad, if its iPad) from -Info.plist
         self.supportedOrientations = [self parseInterfaceOrientations:
@@ -148,13 +148,13 @@
         }
         path = absolutePath;
     }
-    
+
     // Assert file exists
     if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
         NSAssert(NO, @"ERROR: %@ does not exist. Please run cordova-ios/bin/cordova_plist_to_config_xml path/to/project.", path);
         return nil;
     }
-    
+
     return path;
 }
 
@@ -162,7 +162,7 @@
 {
     // read from config.xml in the app bundle
     NSString* path = [self configFilePath];
-    
+
     NSURL* url = [NSURL fileURLWithPath:path];
 
     self.configParser = [[NSXMLParser alloc] initWithContentsOfURL:url];
@@ -208,8 +208,12 @@
         appURL = [NSURL URLWithString:self.startPage];
     } else if ([self.wwwFolderName rangeOfString:@"://"].location != NSNotFound) {
         appURL = [NSURL URLWithString:[NSString stringWithFormat:@"%@/%@", self.wwwFolderName, self.startPage]];
-    } else if([self.wwwFolderName hasSuffix:@".bundle"]){
+    } else if([self.wwwFolderName rangeOfString:@".bundle"].location != NSNotFound){
         // www folder is actually a bundle
+        NSBundle* bundle = [NSBundle bundleWithPath:self.wwwFolderName];
+        appURL = [bundle URLForResource:self.startPage withExtension:nil];
+    } else if([self.wwwFolderName rangeOfString:@".framework"].location != NSNotFound){
+        // www folder is actually a framework
         NSBundle* bundle = [NSBundle bundleWithPath:self.wwwFolderName];
         appURL = [bundle URLForResource:self.startPage withExtension:nil];
     } else {
@@ -269,7 +273,7 @@
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    
+
     // Load settings
     [self loadSettings];
 
@@ -280,8 +284,12 @@
         backupWebStorageType = backupWebStorage;
     }
     [self.settings setCordovaSetting:backupWebStorageType forKey:@"BackupWebStorage"];
-    
-    [CDVLocalStorage __fixupDatabaseLocationsWithBackupType:backupWebStorageType];
+
+    // // Instantiate the Launch screen /////////
+
+    if (!self.launchView) {
+        [self createLaunchView];
+    }
 
     // // Instantiate the WebView ///////////////
 
@@ -290,17 +298,6 @@
     }
 
     // /////////////////
-
-    /*
-     * Fire up CDVLocalStorage to work-around WebKit storage limitations: on all iOS 5.1+ versions for local-only backups, but only needed on iOS 5.1 for cloud backup.
-        With minimum iOS 7/8 supported, only first clause applies.
-     */
-    if ([backupWebStorageType isEqualToString:@"local"]) {
-        NSString* localStorageFeatureName = @"localstorage";
-        if ([self.pluginsMap objectForKey:localStorageFeatureName]) { // plugin specified in config
-            [self.startupPluginNames addObject:localStorageFeatureName];
-        }
-    }
 
     if ([self.startupPluginNames count] > 0) {
         [CDVTimer start:@"TotalPluginStartup"];
@@ -317,27 +314,116 @@
     // /////////////////
     NSURL* appURL = [self appUrl];
 
-    [CDVUserAgentUtil acquireLock:^(NSInteger lockToken) {
-        _userAgentLockToken = lockToken;
-        [CDVUserAgentUtil setUserAgent:self.userAgent lockToken:lockToken];
-        if (appURL) {
-            NSURLRequest* appReq = [NSURLRequest requestWithURL:appURL cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:20.0];
-            [self.webViewEngine loadRequest:appReq];
-        } else {
-            NSString* loadErr = [NSString stringWithFormat:@"ERROR: Start Page at '%@/%@' was not found.", self.wwwFolderName, self.startPage];
-            NSLog(@"%@", loadErr);
+    if (appURL) {
+        NSURLRequest* appReq = [NSURLRequest requestWithURL:appURL cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:20.0];
+        [self.webViewEngine loadRequest:appReq];
+    } else {
+        NSString* loadErr = [NSString stringWithFormat:@"ERROR: Start Page at '%@/%@' was not found.", self.wwwFolderName, self.startPage];
+        NSLog(@"%@", loadErr);
 
-            NSURL* errorUrl = [self errorURL];
-            if (errorUrl) {
-                errorUrl = [NSURL URLWithString:[NSString stringWithFormat:@"?error=%@", [loadErr stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]] relativeToURL:errorUrl];
-                NSLog(@"%@", [errorUrl absoluteString]);
-                [self.webViewEngine loadRequest:[NSURLRequest requestWithURL:errorUrl]];
-            } else {
-                NSString* html = [NSString stringWithFormat:@"<html><body> %@ </body></html>", loadErr];
-                [self.webViewEngine loadHTMLString:html baseURL:nil];
-            }
+        NSURL* errorUrl = [self errorURL];
+        if (errorUrl) {
+            errorUrl = [NSURL URLWithString:[NSString stringWithFormat:@"?error=%@", [loadErr stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]] relativeToURL:errorUrl];
+            NSLog(@"%@", [errorUrl absoluteString]);
+            [self.webViewEngine loadRequest:[NSURLRequest requestWithURL:errorUrl]];
+        } else {
+            NSString* html = [NSString stringWithFormat:@"<html><body> %@ </body></html>", loadErr];
+            [self.webViewEngine loadHTMLString:html baseURL:nil];
         }
-    }];
+    }
+    // /////////////////
+
+    UIColor* bgColor = [UIColor colorNamed:@"BackgroundColor"] ?: UIColor.whiteColor;
+    [self.launchView setBackgroundColor:bgColor];
+    [self.webView setBackgroundColor:bgColor];
+}
+
+-(void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:CDVViewWillAppearNotification object:nil]];
+}
+
+-(void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:CDVViewDidAppearNotification object:nil]];
+}
+
+-(void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:CDVViewWillDisappearNotification object:nil]];
+}
+
+-(void)viewDidDisappear:(BOOL)animated
+{
+    [super viewDidDisappear:animated];
+    [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:CDVViewDidDisappearNotification object:nil]];
+}
+
+-(void)viewWillLayoutSubviews
+{
+    [super viewWillLayoutSubviews];
+    [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:CDVViewWillLayoutSubviewsNotification object:nil]];
+}
+
+-(void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:CDVViewDidLayoutSubviewsNotification object:nil]];
+}
+
+-(void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator
+{
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:CDVViewWillTransitionToSizeNotification object:[NSValue valueWithCGSize:size]]];
+}
+
+- (UIColor*)colorFromColorString:(NSString*)colorString
+{
+    // No value, nothing to do
+    if (!colorString) {
+        return nil;
+    }
+
+    // Validate format
+    NSError* error = NULL;
+    NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:@"^(#[0-9A-F]{3}|(0x|#)([0-9A-F]{2})?[0-9A-F]{6})$" options:NSRegularExpressionCaseInsensitive error:&error];
+    NSUInteger countMatches = [regex numberOfMatchesInString:colorString options:0 range:NSMakeRange(0, [colorString length])];
+
+    if (!countMatches) {
+        return nil;
+    }
+
+    // #FAB to #FFAABB
+    if ([colorString hasPrefix:@"#"] && [colorString length] == 4) {
+        NSString* r = [colorString substringWithRange:NSMakeRange(1, 1)];
+        NSString* g = [colorString substringWithRange:NSMakeRange(2, 1)];
+        NSString* b = [colorString substringWithRange:NSMakeRange(3, 1)];
+        colorString = [NSString stringWithFormat:@"#%@%@%@%@%@%@", r, r, g, g, b, b];
+    }
+
+    // #RRGGBB to 0xRRGGBB
+    colorString = [colorString stringByReplacingOccurrencesOfString:@"#" withString:@"0x"];
+
+    // 0xRRGGBB to 0xAARRGGBB
+    if ([colorString hasPrefix:@"0x"] && [colorString length] == 8) {
+        colorString = [@"0xFF" stringByAppendingString:[colorString substringFromIndex:2]];
+    }
+
+    // 0xAARRGGBB to int
+    unsigned colorValue = 0;
+    NSScanner *scanner = [NSScanner scannerWithString:colorString];
+    if (![scanner scanHexInt:&colorValue]) {
+        return nil;
+    }
+
+    // int to UIColor
+    return [UIColor colorWithRed:((float)((colorValue & 0x00FF0000) >> 16))/255.0
+                           green:((float)((colorValue & 0x0000FF00) >>  8))/255.0
+                            blue:((float)((colorValue & 0x000000FF) >>  0))/255.0
+                           alpha:((float)((colorValue & 0xFF000000) >> 24))/255.0];
 }
 
 - (NSArray*)parseInterfaceOrientations:(NSArray*)orientations
@@ -374,7 +460,7 @@
     return YES;
 }
 
-- (NSUInteger)supportedInterfaceOrientations
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
     NSUInteger ret = 0;
 
@@ -396,14 +482,17 @@
 
 - (BOOL)supportsOrientation:(UIInterfaceOrientation)orientation
 {
-    return [self.supportedOrientations containsObject:[NSNumber numberWithInt:orientation]];
+    return [self.supportedOrientations containsObject:@(orientation)];
 }
 
 - (UIView*)newCordovaViewWithFrame:(CGRect)bounds
 {
-    NSString* defaultWebViewEngineClass = @"CDVUIWebViewEngine";
+    NSString* defaultWebViewEngineClass = [self.settings cordovaSettingForKey:@"CordovaDefaultWebViewEngine"];
     NSString* webViewEngineClass = [self.settings cordovaSettingForKey:@"CordovaWebViewEngine"];
 
+    if (!defaultWebViewEngineClass) {
+        defaultWebViewEngineClass = @"CDVWebViewEngine";
+    }
     if (!webViewEngineClass) {
         webViewEngineClass = defaultWebViewEngineClass;
     }
@@ -411,7 +500,7 @@
     // Find webViewEngine
     if (NSClassFromString(webViewEngineClass)) {
         self.webViewEngine = [[NSClassFromString(webViewEngineClass) alloc] initWithFrame:bounds];
-        // if a webView engine returns nil (not supported by the current iOS version) or doesn't conform to the protocol, or can't load the request, we use UIWebView
+        // if a webView engine returns nil (not supported by the current iOS version) or doesn't conform to the protocol, or can't load the request, we use WKWebView
         if (!self.webViewEngine || ![self.webViewEngine conformsToProtocol:@protocol(CDVWebViewEngineProtocol)] || ![self.webViewEngine canLoadRequest:[NSURLRequest requestWithURL:self.appUrl]]) {
             self.webViewEngine = [[NSClassFromString(defaultWebViewEngineClass) alloc] initWithFrame:bounds];
         }
@@ -426,39 +515,34 @@
     return self.webViewEngine.engineWebView;
 }
 
-- (NSString*)userAgent
+- (void)createLaunchView
 {
-    if (_userAgent != nil) {
-        return _userAgent;
+    CGRect webViewBounds = self.view.bounds;
+    webViewBounds.origin = self.view.bounds.origin;
+
+    UIView* view = [[UIView alloc] initWithFrame:webViewBounds];
+
+    NSString* launchStoryboardName = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"UILaunchStoryboardName"];
+    if (launchStoryboardName != nil) {
+        UIStoryboard* storyboard = [UIStoryboard storyboardWithName:launchStoryboardName bundle:[NSBundle mainBundle]];
+        UIViewController* vc = [storyboard instantiateInitialViewController];
+
+        [view addSubview:vc.view];
     }
 
-    NSString* localBaseUserAgent;
-    if (self.baseUserAgent != nil) {
-        localBaseUserAgent = self.baseUserAgent;
-    } else if ([self.settings cordovaSettingForKey:@"OverrideUserAgent"] != nil) {
-        localBaseUserAgent = [self.settings cordovaSettingForKey:@"OverrideUserAgent"];
-    } else {
-        localBaseUserAgent = [CDVUserAgentUtil originalUserAgent];
-    }
-    NSString* appendUserAgent = [self.settings cordovaSettingForKey:@"AppendUserAgent"];
-    if (appendUserAgent) {
-        _userAgent = [NSString stringWithFormat:@"%@ %@", localBaseUserAgent, appendUserAgent];
-    } else {
-        // Use our address as a unique number to append to the User-Agent.
-        _userAgent = [NSString stringWithFormat:@"%@ (%lld)", localBaseUserAgent, (long long)self];
-    }
-    return _userAgent;
+    self.launchView = view;
+    [self.view addSubview:view];
 }
 
 - (void)createGapView
 {
     CGRect webViewBounds = self.view.bounds;
-
     webViewBounds.origin = self.view.bounds.origin;
 
     UIView* view = [self newCordovaViewWithFrame:webViewBounds];
-
+    view.hidden = YES;
     view.autoresizingMask = (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
+
     [self.view addSubview:view];
     [self.view sendSubviewToBack:view];
 }
@@ -486,16 +570,6 @@
     }
 
     // Release any cached data, images, etc. that aren't in use.
-}
-
-- (void)viewDidUnload
-{
-    // Release any retained subviews of the main view.
-    // e.g. self.myOutlet = nil;
-
-    [CDVUserAgentUtil releaseLock:&_userAgentLockToken];
-
-    [super viewDidUnload];
 }
 
 #pragma mark CordovaCommands
@@ -549,6 +623,12 @@
     id obj = [self.pluginObjects objectForKey:className];
     if (!obj) {
         obj = [[NSClassFromString(className)alloc] initWithWebViewEngine:_webViewEngine];
+        if (!obj) {
+            NSString* fullClassName = [NSString stringWithFormat:@"%@.%@",
+                                       NSBundle.mainBundle.infoDictionary[@"CFBundleExecutable"],
+                                       className];
+            obj = [[NSClassFromString(fullClassName)alloc] initWithWebViewEngine:_webViewEngine];
+        }
 
         if (obj != nil) {
             [self registerPlugin:obj withClassName:className];
@@ -607,12 +687,33 @@
     }
 }
 
+- (bool)isUrlEmpty:(NSURL *)url
+{
+    if (!url || (url == (id) [NSNull null])) {
+        return true;
+    }
+    NSString *urlAsString = [url absoluteString];
+    return (urlAsString == (id) [NSNull null] || [urlAsString length]==0 || [urlAsString isEqualToString:@"about:blank"]);
+}
+
+- (bool)checkAndReinitViewUrl
+{
+    NSURL* appURL = [self appUrl];
+    if ([self isUrlEmpty: [self.webViewEngine URL]] && ![self isUrlEmpty: appURL]) {
+        NSURLRequest* appReq = [NSURLRequest requestWithURL:appURL cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:20.0];
+        [self.webViewEngine loadRequest:appReq];
+        return true;
+    }
+    return false;
+}
+
 /*
  This method is called to let your application know that it is about to move from the active to inactive state.
  You should use this method to pause ongoing tasks, disable timer, ...
  */
 - (void)onAppWillResignActive:(NSNotification*)notification
 {
+    [self checkAndReinitViewUrl];
     // NSLog(@"%@",@"applicationWillResignActive");
     [self.commandDelegate evalJs:@"cordova.fireDocumentEvent('resign');" scheduledOnRunLoop:NO];
 }
@@ -624,20 +725,24 @@
  */
 - (void)onAppWillEnterForeground:(NSNotification*)notification
 {
+    [self checkAndReinitViewUrl];
     // NSLog(@"%@",@"applicationWillEnterForeground");
     [self.commandDelegate evalJs:@"cordova.fireDocumentEvent('resume');"];
 
-    /** Clipboard fix **/
-    UIPasteboard* pasteboard = [UIPasteboard generalPasteboard];
-    NSString* string = pasteboard.string;
-    if (string) {
-        [pasteboard setValue:string forPasteboardType:@"public.text"];
+    if (!IsAtLeastiOSVersion(@"11.0")) {
+        /** Clipboard fix **/
+        UIPasteboard* pasteboard = [UIPasteboard generalPasteboard];
+        NSString* string = pasteboard.string;
+        if (string) {
+            [pasteboard setValue:string forPasteboardType:@"public.text"];
+        }
     }
 }
 
 // This method is called to let your application know that it moved from the inactive to active state.
 - (void)onAppDidBecomeActive:(NSNotification*)notification
 {
+    [self checkAndReinitViewUrl];
     // NSLog(@"%@",@"applicationDidBecomeActive");
     [self.commandDelegate evalJs:@"cordova.fireDocumentEvent('active');"];
 }
@@ -648,8 +753,46 @@
  */
 - (void)onAppDidEnterBackground:(NSNotification*)notification
 {
+    [self checkAndReinitViewUrl];
     // NSLog(@"%@",@"applicationDidEnterBackground");
     [self.commandDelegate evalJs:@"cordova.fireDocumentEvent('pause', null, true);" scheduledOnRunLoop:NO];
+}
+
+/**
+ Show the webview and fade out the intermediary view
+ This is to prevent the flashing of the mainViewController
+ */
+- (void)onWebViewPageDidLoad:(NSNotification*)notification
+{
+    self.webView.hidden = NO;
+
+    if ([self.settings cordovaBoolSettingForKey:@"AutoHideSplashScreen" defaultValue:YES]) {
+       [self showLaunchScreen:NO];
+    }
+}
+
+/**
+ Method to be called from the plugin JavaScript to show or hide the launch screen.
+ */
+- (void)showLaunchScreen:(BOOL)visible
+{
+    CGFloat splashScreenDelay = [self.settings cordovaFloatSettingForKey:@"SplashScreenDelay" defaultValue:0];
+
+    // AnimateWithDuration takes seconds but cordova documentation specifies milliseconds
+    CGFloat fadeSplashScreenDuration = [self.settings cordovaFloatSettingForKey:@"FadeSplashScreenDuration" defaultValue:250];
+
+    // Setting minimum value for fade to 0.25 seconds
+    fadeSplashScreenDuration = fadeSplashScreenDuration < 250 ? 250 : fadeSplashScreenDuration;
+
+    // Divide by 1000 because config returns milliseconds and NSTimer takes seconds
+    CGFloat delayToFade = (MAX(splashScreenDelay, fadeSplashScreenDuration) - fadeSplashScreenDuration)/1000;
+    CGFloat fadeDuration = fadeSplashScreenDuration/1000;
+
+    [NSTimer scheduledTimerWithTimeInterval:delayToFade repeats:NO block:^(NSTimer * _Nonnull timer) {
+        [UIView animateWithDuration:fadeDuration animations:^{
+            [self.launchView setAlpha:(visible ? 1 : 0)];
+        }];
+    }];
 }
 
 // ///////////////////////
@@ -658,14 +801,13 @@
 {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 
-    [CDVUserAgentUtil releaseLock:&_userAgentLockToken];
     [_commandQueue dispose];
     [[self.pluginObjects allValues] makeObjectsPerformSelector:@selector(dispose)];
-}
 
-- (NSInteger*)userAgentLockToken
-{
-    return &_userAgentLockToken;
+    [self.webViewEngine loadHTMLString:@"about:blank" baseURL:nil];
+    [self.pluginObjects removeAllObjects];
+    [self.webView removeFromSuperview];
+    self.webViewEngine = nil;
 }
 
 @end

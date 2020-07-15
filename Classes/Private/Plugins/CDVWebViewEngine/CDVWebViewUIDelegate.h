@@ -17,11 +17,16 @@
  under the License.
  */
 
-#import <Cordova/CDVPlugin.h>
+#import <WebKit/WebKit.h>
 
-@interface CDVHandleOpenURL : CDVPlugin
+@interface CDVWebViewUIDelegate : NSObject <WKUIDelegate>
+{
+    NSMutableArray<UIViewController*>* windows;
+}
 
-@property (nonatomic, strong) NSURL* url;
-@property (nonatomic, assign) BOOL pageLoaded;
+@property (nonatomic, copy) NSString* title;
+@property (nonatomic, assign) BOOL allowNewWindows;
+
+- (instancetype)initWithTitle:(NSString*)title;
 
 @end

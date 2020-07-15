@@ -17,11 +17,23 @@
  under the License.
  */
 
-#import <Cordova/CDVPlugin.h>
+#import "CDVLaunchScreen.h"
+#import <Cordova/CDVViewController.h>
 
-@interface CDVHandleOpenURL : CDVPlugin
+@implementation CDVLaunchScreen
 
-@property (nonatomic, strong) NSURL* url;
-@property (nonatomic, assign) BOOL pageLoaded;
+- (void)show:(CDVInvokedUrlCommand*)command
+{
+    if ([self.viewController isKindOfClass:[CDVViewController class]]) {
+        [(CDVViewController*)self.viewController showLaunchScreen:YES];
+    }
+}
+
+- (void)hide:(CDVInvokedUrlCommand*)command
+{
+    if ([self.viewController isKindOfClass:[CDVViewController class]]) {
+        [(CDVViewController*)self.viewController showLaunchScreen:NO];
+    }
+}
 
 @end

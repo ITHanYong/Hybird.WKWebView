@@ -19,9 +19,9 @@
 
 #import <Cordova/CDVPlugin.h>
 
-@interface CDVHandleOpenURL : CDVPlugin
+@interface CDVLaunchScreen : CDVPlugin
 
-@property (nonatomic, strong) NSURL* url;
-@property (nonatomic, assign) BOOL pageLoaded;
+- (void)show:(CDVInvokedUrlCommand*)command;
+- (void)hide:(CDVInvokedUrlCommand*)command;
 
 @end

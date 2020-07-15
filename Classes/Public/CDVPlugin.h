@@ -32,10 +32,15 @@
 
 extern NSString* const CDVPageDidLoadNotification;
 extern NSString* const CDVPluginHandleOpenURLNotification;
+extern NSString* const CDVPluginHandleOpenURLWithAppSourceAndAnnotationNotification;
 extern NSString* const CDVPluginResetNotification;
-extern NSString* const CDVLocalNotification;
-extern NSString* const CDVRemoteNotification;
-extern NSString* const CDVRemoteNotificationError;
+extern NSString* const CDVViewWillAppearNotification;
+extern NSString* const CDVViewDidAppearNotification;
+extern NSString* const CDVViewWillDisappearNotification;
+extern NSString* const CDVViewDidDisappearNotification;
+extern NSString* const CDVViewWillLayoutSubviewsNotification;
+extern NSString* const CDVViewDidLayoutSubviewsNotification;
+extern NSString* const CDVViewWillTransitionToSizeNotification;
 
 @interface CDVPlugin : NSObject {}
 
@@ -50,6 +55,7 @@ extern NSString* const CDVRemoteNotificationError;
 - (void)pluginInitialize;
 
 - (void)handleOpenURL:(NSNotification*)notification;
+- (void)handleOpenURLWithApplicationSourceAndAnnotation:(NSNotification*)notification;
 - (void)onAppTerminate;
 - (void)onMemoryWarning;
 - (void)onReset;
@@ -61,7 +67,6 @@ extern NSString* const CDVRemoteNotificationError;
  - (void) onResume {}
  - (void) onOrientationWillChange {}
  - (void) onOrientationDidChange {}
- - (void)didReceiveLocalNotification:(NSNotification *)notification;
  */
 
 - (id)appDelegate;
